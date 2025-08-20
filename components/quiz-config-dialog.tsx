@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -14,10 +14,29 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Shuffle } from "lucide-react";
 import { vocab } from "@/data/vocab";
+import { getStarredWords } from "@/lib/starred-words";
+import { getLearnedWords } from "@/lib/learned-words";
 
 export default function QuizConfigDialog() {
-  const [quizMode, setQuizMode] = useState<"all" | "starred" | "custom">("all");
+  const [quizMode, setQuizMode] = useState<
+    "all" | "starred" | "custom" | "learned"
+  >("all");
   const [customWordCount, setCustomWordCount] = useState(10);
+  const [starredWordsCount, setStarredWordsCount] = useState(0);
+  const [learnedWordsCount, setLearnedWordsCount] = useState(0);
+
+  // Load starred and learned words count from Supabase
+  useEffect(() => {
+    const loadCounts = async () => {
+      const [starredWords, learnedWords] = await Promise.all([
+        getStarredWords(),
+        getLearnedWords(),
+      ]);
+      setStarredWordsCount(starredWords.length);
+      setLearnedWordsCount(learnedWords.length);
+    };
+    loadCounts();
+  }, []);
 
   const startQuiz = () => {
     // Build URL with quiz configuration
@@ -28,6 +47,8 @@ export default function QuizConfigDialog() {
       params.set("mode", "all");
     } else if (quizMode === "starred") {
       params.set("mode", "starred");
+    } else if (quizMode === "learned") {
+      params.set("mode", "learned");
     } else if (quizMode === "custom") {
       params.set("mode", "custom");
       params.set("count", customWordCount.toString());
@@ -72,12 +93,13 @@ export default function QuizConfigDialog() {
               <div className="flex items-center space-x-2">
                 <RadioGroupItem value="starred" id="starred" />
                 <Label htmlFor="starred">
-                  Starred Words (
-                  {
-                    JSON.parse(localStorage.getItem("starredWords") || "[]")
-                      .length
-                  }{" "}
-                  words)
+                  Starred Words ({starredWordsCount} words)
+                </Label>
+              </div>
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="learned" id="learned" />
+                <Label htmlFor="learned">
+                  Learned Words ({learnedWordsCount} words)
                 </Label>
               </div>
               <div className="flex items-center space-x-2">

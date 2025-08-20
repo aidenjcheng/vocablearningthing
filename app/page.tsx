@@ -18,6 +18,7 @@ import {
   TrendingUp,
   Target,
   Zap,
+  Check,
 } from "lucide-react";
 import Link from "next/link";
 import QuizConfigDialog from "@/components/quiz-config-dialog";
@@ -46,6 +47,12 @@ async function getUserProgress(userId: string) {
     .select("*")
     .eq("user_id", userId);
 
+  // Get learned words count
+  const { data: learnedWords } = await supabase
+    .from("learned_words")
+    .select("*")
+    .eq("user_id", userId);
+
   return {
     progress: progress || {
       total_quizzes: 0,
@@ -55,6 +62,7 @@ async function getUserProgress(userId: string) {
     },
     recentSessions: recentSessions || [],
     starredWordsCount: starredWords?.length || 0,
+    learnedWordsCount: learnedWords?.length || 0,
   };
 }
 
@@ -75,9 +83,8 @@ export default async function Dashboard() {
     redirect("/auth/login");
   }
 
-  const { progress, recentSessions, starredWordsCount } = await getUserProgress(
-    user.id
-  );
+  const { progress, recentSessions, starredWordsCount, learnedWordsCount } =
+    await getUserProgress(user.id);
 
   // Calculate average accuracy
   const averageAccuracy =
@@ -189,6 +196,14 @@ export default async function Dashboard() {
                   <Button variant="outline" className="w-full">
                     <Star className="h-4 w-4 mr-2" />
                     Review Starred Words ({starredWordsCount})
+                  </Button>
+                </Link>
+              )}
+              {learnedWordsCount > 0 && (
+                <Link href="/quiz?mode=learned">
+                  <Button variant="outline" className="w-full">
+                    <Check className="h-4 w-4 mr-2" />
+                    Practice Learned Words ({learnedWordsCount})
                   </Button>
                 </Link>
               )}

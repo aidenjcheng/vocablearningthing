@@ -14,12 +14,25 @@ import {
   Star,
   Volume2,
   VolumeX,
+  Check,
 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { vocab } from "@/data/vocab";
 import type { VocabularyItem } from "@/types/vocabulary";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { getStarredWords, toggleStarredWord } from "@/lib/starred-words";
+import { addLearnedWords, getLearnedWords } from "@/lib/learned-words";
 
 export default function QuizPage() {
   const router = useRouter();
@@ -52,6 +65,11 @@ export default function QuizPage() {
     null
   );
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [knownWords, setKnownWords] = useState<Set<string>>(new Set());
+  const [showAlreadyKnowDialog, setShowAlreadyKnowDialog] = useState(false);
+  const [learnedWordsInSession, setLearnedWordsInSession] = useState<
+    Set<string>
+  >(new Set());
   const supabase = createClient();
 
   const handleExit = () => {
@@ -90,7 +108,7 @@ export default function QuizPage() {
     setCurrentAudio(audio);
   };
 
-  const handleAnswer = (choice: string) => {
+  const handleAnswer = async (choice: string) => {
     // Prevent answering if already showing answer
     if (showingAnswer) return;
 
@@ -126,21 +144,23 @@ export default function QuizPage() {
       setCorrectAnswersInRow(0);
       playSound("/sound-effects/duolingo-wrong.mp3");
 
-      setStarredWords(
-        (prev) => new Set([...prev, currentWords[currentQuestionIndex].word])
-      );
+      // Add to starred words in Supabase
+      const currentWord = currentWords[currentQuestionIndex].word;
+      await toggleStarredWord(currentWord);
+      setStarredWords((prev) => new Set([...prev, currentWord]));
       setCurrentScreen("sentence");
     }
   };
 
-  const handleIDontKnow = () => {
+  const handleIDontKnow = async () => {
     // Reset streak and play wrong sound
     setCorrectAnswersInRow(0);
     playSound("/sound-effects/duolingo-wrong.mp3");
 
-    setStarredWords(
-      (prev) => new Set([...prev, currentWords[currentQuestionIndex].word])
-    );
+    // Add to starred words in Supabase
+    const currentWord = currentWords[currentQuestionIndex].word;
+    await toggleStarredWord(currentWord);
+    setStarredWords((prev) => new Set([...prev, currentWord]));
     setCurrentScreen("sentence");
   };
 
@@ -165,6 +185,13 @@ export default function QuizPage() {
       // Play success sound if sentence is correct
       if (result.isCorrect) {
         playSound("/sound-effects/duolingo correct sound.mp3");
+        // Track as learned word in review mode if definition was also correct
+        if (mode === "review" && definitionVerification?.isCorrect) {
+          const currentWord = currentWords[currentQuestionIndex]?.word;
+          if (currentWord) {
+            setLearnedWordsInSession((prev) => new Set([...prev, currentWord]));
+          }
+        }
       }
     } catch (error) {
       console.error("Error verifying sentence:", error);
@@ -198,6 +225,13 @@ export default function QuizPage() {
       // Play success sound if definition is correct
       if (result.isCorrect) {
         playSound("/sound-effects/duolingo correct sound.mp3");
+        // Track as learned word in review mode
+        if (mode === "review") {
+          const currentWord = currentWords[currentQuestionIndex]?.word;
+          if (currentWord) {
+            setLearnedWordsInSession((prev) => new Set([...prev, currentWord]));
+          }
+        }
       }
     } catch (error) {
       console.error("Error verifying definition:", error);
@@ -238,7 +272,12 @@ export default function QuizPage() {
       setSentence("");
       setSentenceVerification(null);
     } else {
-      // Review completed - play completion sound
+      // Review completed - save learned words to Supabase
+      if (learnedWordsInSession.size > 0) {
+        addLearnedWords(Array.from(learnedWordsInSession)).catch(console.error);
+      }
+
+      // Play completion sound
       playSound("/sound-effects/duolingo-completed-lesson.mp3");
       setCurrentScreen("review-results");
     }
@@ -320,81 +359,168 @@ export default function QuizPage() {
 
   // Handle mode parameter for direct navigation
   useEffect(() => {
-    if (mode === "starred") {
-      const savedStarredWords = JSON.parse(
-        localStorage.getItem("starredWords") || "[]"
+    const initializeQuiz = async () => {
+      // Load known words from localStorage
+      const savedKnownWords = JSON.parse(
+        localStorage.getItem("knownWords") || "[]"
       );
-      const starredWordsList = vocab.filter((word) =>
-        savedStarredWords.includes(word.word)
-      );
+      setKnownWords(new Set(savedKnownWords));
 
-      if (starredWordsList.length > 0) {
-        // Randomize starred words
-        const randomizedStarredWords = [...starredWordsList].sort(
-          () => Math.random() - 0.5
+      // Load starred words from Supabase
+      const starredWordsList = await getStarredWords();
+      setStarredWords(new Set(starredWordsList));
+
+      // Load learned words from Supabase
+      const learnedWordsList = await getLearnedWords();
+      const allExcludedWords = new Set([
+        ...savedKnownWords,
+        ...learnedWordsList,
+      ]);
+
+      if (mode === "starred") {
+        const starredWordsFromVocab = vocab.filter(
+          (word) =>
+            starredWordsList.includes(word.word) &&
+            !allExcludedWords.has(word.word)
         );
-        setCurrentWords(randomizedStarredWords);
-        setCurrentQuestionIndex(0);
-        setCurrentScreen("quiz");
-        setCorrectAnswersInRow(0);
-        setStarredWords(new Set(savedStarredWords));
-      } else {
-        alert("No starred words found. Please star some words first.");
-        router.push("/");
-      }
-    } else if (mode === "custom") {
-      if (count) {
-        // Custom number of random words from vocab
-        const wordCount = parseInt(count);
-        if (wordCount > 0 && wordCount <= vocab.length) {
-          const selectedWords = [...vocab]
-            .sort(() => Math.random() - 0.5)
-            .slice(0, wordCount);
-          setCurrentWords(selectedWords);
+
+        if (starredWordsFromVocab.length > 0) {
+          // Randomize starred words
+          const randomizedStarredWords = [...starredWordsFromVocab].sort(
+            () => Math.random() - 0.5
+          );
+          setCurrentWords(randomizedStarredWords);
           setCurrentQuestionIndex(0);
           setCurrentScreen("quiz");
           setCorrectAnswersInRow(0);
-          setStarredWords(new Set());
         } else {
-          alert("Invalid word count. Please try again.");
+          alert("No starred words found. Please star some words first.");
           router.push("/");
         }
+      } else if (mode === "custom") {
+        if (count) {
+          // Custom number of random words from vocab (excluding known and learned words)
+          const wordCount = parseInt(count);
+          const availableWords = vocab.filter(
+            (word) => !allExcludedWords.has(word.word)
+          );
+
+          if (wordCount > 0 && wordCount <= availableWords.length) {
+            const selectedWords = [...availableWords]
+              .sort(() => Math.random() - 0.5)
+              .slice(0, wordCount);
+            setCurrentWords(selectedWords);
+            setCurrentQuestionIndex(0);
+            setCurrentScreen("quiz");
+            setCorrectAnswersInRow(0);
+          } else {
+            alert(
+              `Invalid word count. Only ${availableWords.length} words available (excluding known and learned words).`
+            );
+            router.push("/");
+          }
+        } else {
+          // Custom words from Supabase
+          loadCustomWords();
+        }
+      } else if (mode === "learned") {
+        // Quiz with learned words only
+        const learnedWordsFromVocab = vocab.filter((word) =>
+          learnedWordsList.includes(word.word)
+        );
+
+        if (learnedWordsFromVocab.length > 0) {
+          const randomizedLearnedWords = [...learnedWordsFromVocab].sort(
+            () => Math.random() - 0.5
+          );
+          setCurrentWords(randomizedLearnedWords);
+          setCurrentQuestionIndex(0);
+          setCurrentScreen("quiz");
+          setCorrectAnswersInRow(0);
+        } else {
+          alert("No learned words found. Complete some review sessions first!");
+          router.push("/");
+        }
+      } else if (mode === "all") {
+        // Randomize all words (excluding known and learned words)
+        const availableWords = vocab.filter(
+          (word) => !allExcludedWords.has(word.word)
+        );
+        const randomizedVocab = [...availableWords].sort(
+          () => Math.random() - 0.5
+        );
+        setCurrentWords(randomizedVocab);
+        setCurrentQuestionIndex(0);
+        setCurrentScreen("quiz");
+        setCorrectAnswersInRow(0);
       } else {
-        // Custom words from Supabase
-        loadCustomWords();
+        // Default: start with all words if no mode specified (excluding known and learned words)
+        const availableWords = vocab.filter(
+          (word) => !allExcludedWords.has(word.word)
+        );
+        const randomizedVocab = [...availableWords].sort(
+          () => Math.random() - 0.5
+        );
+        setCurrentWords(randomizedVocab);
+        setCurrentQuestionIndex(0);
+        setCurrentScreen("quiz");
       }
-    } else if (mode === "all") {
-      // Randomize all words
-      const randomizedVocab = [...vocab].sort(() => Math.random() - 0.5);
-      setCurrentWords(randomizedVocab);
-      setCurrentQuestionIndex(0);
-      setCurrentScreen("quiz");
-      setCorrectAnswersInRow(0);
-      setStarredWords(new Set());
-    } else {
-      // Default: start with all words if no mode specified
-      const randomizedVocab = [...vocab].sort(() => Math.random() - 0.5);
-      setCurrentWords(randomizedVocab);
-      setCurrentQuestionIndex(0);
-      setCurrentScreen("quiz");
-    }
+    };
+
+    initializeQuiz();
   }, [mode, count]);
 
-  const toggleStar = (word: string) => {
-    setStarredWords((prev) => {
+  const toggleStar = async (word: string) => {
+    const success = await toggleStarredWord(word);
+    if (success) {
+      setStarredWords((prev) => {
+        const newSet = new Set(prev);
+        if (newSet.has(word)) {
+          newSet.delete(word);
+        } else {
+          newSet.add(word);
+        }
+        return newSet;
+      });
+    }
+  };
+
+  const handleAlreadyKnow = () => {
+    setShowAlreadyKnowDialog(true);
+  };
+
+  const confirmAlreadyKnow = () => {
+    const currentWord = currentWords[currentQuestionIndex]?.word;
+    if (!currentWord) return;
+
+    // Add to known words set
+    setKnownWords((prev) => {
       const newSet = new Set(prev);
-      if (newSet.has(word)) {
-        newSet.delete(word);
-      } else {
-        newSet.add(word);
-      }
+      newSet.add(currentWord);
 
       // Save to localStorage
-      const starredArray = Array.from(newSet);
-      localStorage.setItem("starredWords", JSON.stringify(starredArray));
+      const knownArray = Array.from(newSet);
+      localStorage.setItem("knownWords", JSON.stringify(knownArray));
 
       return newSet;
     });
+
+    // Remove from current words list
+    setCurrentWords((prev) => {
+      const filtered = prev.filter((word) => word.word !== currentWord);
+      return filtered;
+    });
+
+    // If this was the last word, end the quiz
+    if (currentWords.length <= 1) {
+      playSound("/sound-effects/duolingo-completed-lesson.mp3");
+      setCurrentScreen("results");
+    } else {
+      // Move to next question (don't increment index since we removed a word)
+      moveToNextQuestion();
+    }
+
+    setShowAlreadyKnowDialog(false);
   };
 
   return (
@@ -453,7 +579,9 @@ export default function QuizPage() {
                   variant="ghost"
                   size="sm"
                   onClick={() =>
-                    toggleStar(currentWords[currentQuestionIndex]?.word)
+                    toggleStar(currentWords[currentQuestionIndex]?.word).catch(
+                      console.error
+                    )
                   }
                   className={`p-2 ${
                     starredWords.has(currentWords[currentQuestionIndex]?.word)
@@ -489,7 +617,9 @@ export default function QuizPage() {
                         : ""
                       : "hover:bg-muted/50"
                   }`}
-                  onClick={() => !showingAnswer && handleAnswer(choice)}
+                  onClick={() =>
+                    !showingAnswer && handleAnswer(choice).catch(console.error)
+                  }
                 >
                   <CardContent className="p-0">
                     <div className="flex items-start gap-4">
@@ -503,15 +633,26 @@ export default function QuizPage() {
               ))}
             </div>
 
-            <div className="text-center">
-              <Button
-                onClick={handleIDontKnow}
-                variant="outline"
-                disabled={showingAnswer}
-              >
-                I Don't Know
-              </Button>
-              <p className="text-sm text-muted-foreground mt-2">
+            <div className="text-center space-y-4">
+              <div className="flex gap-4 justify-center">
+                <Button
+                  onClick={() => handleIDontKnow().catch(console.error)}
+                  variant="outline"
+                  disabled={showingAnswer}
+                >
+                  I Don't Know
+                </Button>
+                <Button
+                  onClick={handleAlreadyKnow}
+                  variant="outline"
+                  disabled={showingAnswer}
+                  className="bg-green-50 text-green-700 border-green-200 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-300 dark:border-green-800 dark:hover:bg-green-900/30"
+                >
+                  <Check className="h-4 w-4 mr-2" />
+                  Already Know
+                </Button>
+              </div>
+              <p className="text-sm text-muted-foreground">
                 Press 1-4 to select answers quickly
               </p>
             </div>
@@ -578,9 +719,19 @@ export default function QuizPage() {
                   >
                     {isVerifying ? "Checking..." : "Check Sentence"}
                   </Button>
-                ) : (
+                ) : sentenceVerification.isCorrect ? (
                   <Button onClick={moveToNextQuestion} className="px-8">
                     Continue to Next Question
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={() => {
+                      setSentenceVerification(null);
+                      setSentence("");
+                    }}
+                    className="px-8"
+                  >
+                    Try Again
                   </Button>
                 )}
               </div>
@@ -650,7 +801,9 @@ export default function QuizPage() {
                   variant="ghost"
                   size="sm"
                   onClick={() =>
-                    toggleStar(currentWords[currentQuestionIndex]?.word)
+                    toggleStar(currentWords[currentQuestionIndex]?.word).catch(
+                      console.error
+                    )
                   }
                   className={`p-2 ${
                     starredWords.has(currentWords[currentQuestionIndex]?.word)
@@ -712,12 +865,22 @@ export default function QuizPage() {
                         ? "Checking..."
                         : "Check Definition"}
                     </Button>
-                  ) : (
+                  ) : definitionVerification.isCorrect ? (
                     <Button
                       onClick={() => setCurrentScreen("review-sentence")}
                       className="px-8"
                     >
                       Continue to Sentence
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={() => {
+                        setDefinitionVerification(null);
+                        setUserDefinition("");
+                      }}
+                      className="px-8"
+                    >
+                      Try Again
                     </Button>
                   )}
                 </div>
@@ -786,9 +949,19 @@ export default function QuizPage() {
                   >
                     {isVerifying ? "Checking..." : "Check Sentence"}
                   </Button>
-                ) : (
+                ) : sentenceVerification.isCorrect ? (
                   <Button onClick={moveToNextReviewQuestion} className="px-8">
                     Continue to Next Word
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={() => {
+                      setSentenceVerification(null);
+                      setSentence("");
+                    }}
+                    className="px-8"
+                  >
+                    Try Again
                   </Button>
                 )}
               </div>
@@ -805,6 +978,28 @@ export default function QuizPage() {
               You've completed the review session for all {currentWords.length}{" "}
               words.
             </p>
+            {learnedWordsInSession.size > 0 && (
+              <div className="mb-8 p-6 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
+                <h3 className="text-lg font-semibold text-green-800 dark:text-green-200 mb-2">
+                  🎉 Congratulations!
+                </h3>
+                <p className="text-green-700 dark:text-green-300">
+                  You've successfully learned {learnedWordsInSession.size} new
+                  word{learnedWordsInSession.size === 1 ? "" : "s"}! These words
+                  will no longer appear in your regular quizzes.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2 justify-center">
+                  {Array.from(learnedWordsInSession).map((word, index) => (
+                    <span
+                      key={index}
+                      className="px-3 py-1 bg-green-100 dark:bg-green-800 text-green-800 dark:text-green-200 rounded-full text-sm font-medium"
+                    >
+                      {word}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="space-y-4">
               <Link href="/">
                 <Button className="mr-4">Back to Dashboard</Button>
@@ -827,6 +1022,30 @@ export default function QuizPage() {
             </div>
           </div>
         )}
+
+        {/* Already Know Confirmation Dialog */}
+        <AlertDialog
+          open={showAlreadyKnowDialog}
+          onOpenChange={setShowAlreadyKnowDialog}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Mark as Already Known?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Are you sure you want to mark "
+                {currentWords[currentQuestionIndex]?.word}" as already known?
+                This word will be removed from all future quizzes and you won't
+                see it again.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={confirmAlreadyKnow}>
+                Yes, I Know This Word
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   );
