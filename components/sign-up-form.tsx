@@ -1,55 +1,71 @@
-"use client"
+"use client";
 
-import type React from "react"
+import type React from "react";
 
-import { useState } from "react"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Loader2 } from "lucide-react"
-import Link from "next/link"
-import { createClient } from "@/lib/supabase/client"
-import { useRouter } from "next/navigation"
+import { useState, useEffect } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Loader2 } from "lucide-react";
+import Link from "next/link";
+import { createClient } from "@/lib/supabase/client";
+import { useRouter } from "next/navigation";
 
 export default function SignUpForm() {
-  const [email, setEmail] = useState("")
-  const [password, setPassword] = useState("")
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState("")
-  const router = useRouter()
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const router = useRouter();
+
+  // Check if user is already logged in
+  useEffect(() => {
+    const checkSession = async () => {
+      const supabase = createClient();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (session) {
+        router.push("/");
+      }
+    };
+    checkSession();
+  }, [router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoading(true)
-    setError("")
+    e.preventDefault();
+    setLoading(true);
+    setError("");
 
-    const supabase = createClient()
+    const supabase = createClient();
     const { error: signUpError } = await supabase.auth.signUp({
       email,
       password,
       options: {
-        emailRedirectTo: process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL || window.location.origin,
+        emailRedirectTo:
+          process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL ||
+          window.location.origin,
       },
-    })
+    });
 
     if (signUpError) {
-      setError(signUpError.message)
-      setLoading(false)
-      return
+      setError(signUpError.message);
+      setLoading(false);
+      return;
     }
 
     const { error: signInError } = await supabase.auth.signInWithPassword({
       email,
       password,
-    })
+    });
 
     if (signInError) {
-      setError(signInError.message)
+      setError(signInError.message);
     } else {
-      router.push("/")
+      router.push("/");
     }
-    setLoading(false)
-  }
+    setLoading(false);
+  };
 
   return (
     <Card className="w-full max-w-md">
@@ -61,7 +77,13 @@ export default function SignUpForm() {
           {error && <div className="text-sm text-destructive">{error}</div>}
 
           <div>
-            <Input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+            <Input
+              type="email"
+              placeholder="Email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
           </div>
 
           <div>
@@ -94,5 +116,5 @@ export default function SignUpForm() {
         </form>
       </CardContent>
     </Card>
-  )
+  );
 }

@@ -1,7 +1,7 @@
 import { generateText } from "ai";
 import { groq } from "@ai-sdk/groq";
 import { type NextRequest, NextResponse } from "next/server";
-d;
+
 export async function POST(request: NextRequest) {
   try {
     const { word, definition, sentence } = await request.json();
