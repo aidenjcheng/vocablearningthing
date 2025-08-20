@@ -57,6 +57,9 @@ export default function SignUpForm() {
     const { error: signInError } = await supabase.auth.signInWithPassword({
       email,
       password,
+      options: {
+        persistSession: true, // Enable session persistence
+      },
     });
 
     if (signInError) {

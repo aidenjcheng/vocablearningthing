@@ -46,7 +46,10 @@ export default function QuizPage() {
   const [currentChoices, setCurrentChoices] = useState<string[]>([]);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [currentWords, setCurrentWords] = useState<VocabularyItem[]>(vocab);
-  const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
+  const [selectedAnswer, setSelectedAnswer] = useState<{
+    text: string;
+    isCorrect: boolean;
+  } | null>(null);
   const [sentence, setSentence] = useState("");
   const [sentenceVerification, setSentenceVerification] = useState<{
     isCorrect: boolean;
@@ -70,6 +73,9 @@ export default function QuizPage() {
   const [learnedWordsInSession, setLearnedWordsInSession] = useState<
     Set<string>
   >(new Set());
+  const [selectedChoiceIndex, setSelectedChoiceIndex] = useState<number | null>(
+    null
+  );
   const supabase = createClient();
 
   const handleExit = () => {
@@ -78,20 +84,119 @@ export default function QuizPage() {
 
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
+      // Only handle shortcuts when not in a text input
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
+
       if (currentScreen === "quiz" && !showingAnswer) {
         const key = e.key;
         if (["1", "2", "3", "4"].includes(key)) {
           const index = Number.parseInt(key) - 1;
           if (index < currentChoices.length) {
-            handleAnswer(currentChoices[index]);
+            setSelectedChoiceIndex(index);
+            const choice = currentChoices[index];
+            const isCorrect =
+              choice === currentWords[currentQuestionIndex]?.definition;
+            setSelectedAnswer({ text: choice, isCorrect });
           }
+        } else if (
+          key === "ArrowLeft" ||
+          key === "ArrowRight" ||
+          key === "ArrowUp" ||
+          key === "ArrowDown"
+        ) {
+          e.preventDefault();
+          if (selectedChoiceIndex === null) {
+            setSelectedChoiceIndex(0);
+            const choice = currentChoices[0];
+            const isCorrect =
+              choice === currentWords[currentQuestionIndex]?.definition;
+            setSelectedAnswer({ text: choice, isCorrect });
+          } else {
+            let newIndex = selectedChoiceIndex;
+            if (key === "ArrowLeft") {
+              // Move to opposite side horizontally
+              newIndex =
+                selectedChoiceIndex % 2 === 0
+                  ? selectedChoiceIndex + 1
+                  : selectedChoiceIndex - 1;
+            } else if (key === "ArrowRight") {
+              // Move to opposite side horizontally
+              newIndex =
+                selectedChoiceIndex % 2 === 0
+                  ? selectedChoiceIndex + 1
+                  : selectedChoiceIndex - 1;
+            } else if (key === "ArrowUp") {
+              // Move up (to opposite row)
+              newIndex =
+                selectedChoiceIndex < 2
+                  ? selectedChoiceIndex + 2
+                  : selectedChoiceIndex - 2;
+            } else if (key === "ArrowDown") {
+              // Move down (to opposite row)
+              newIndex =
+                selectedChoiceIndex < 2
+                  ? selectedChoiceIndex + 2
+                  : selectedChoiceIndex - 2;
+            }
+
+            // Ensure index is within bounds
+            if (newIndex >= 0 && newIndex < currentChoices.length) {
+              setSelectedChoiceIndex(newIndex);
+              const choice = currentChoices[newIndex];
+              const isCorrect =
+                choice === currentWords[currentQuestionIndex]?.definition;
+              setSelectedAnswer({ text: choice, isCorrect });
+            }
+          }
+        } else if (key === "Enter") {
+          e.preventDefault();
+          if (selectedAnswer && !showingAnswer) {
+            handleAnswer(selectedAnswer.text).catch(console.error);
+          } else if (showingAnswer && !selectedAnswer?.isCorrect) {
+            setCurrentScreen("sentence");
+          }
+        }
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+
+        // Submit sentence if on sentence screen and sentence is entered
+        if (currentScreen === "sentence" && sentence.trim()) {
+          if (!sentenceVerification) {
+            verifySentence();
+          } else if (sentenceVerification.isCorrect) {
+            moveToNextQuestion();
+          }
+        }
+        // Continue to next question if showing answer
+        else if (showingAnswer) {
+          moveToNextQuestion();
+        }
+        // Continue to next review question if on review screen and both verifications are correct
+        else if (
+          currentScreen === "review" &&
+          definitionVerification?.isCorrect &&
+          sentenceVerification?.isCorrect
+        ) {
+          moveToNextReviewQuestion();
         }
       }
     };
 
     window.addEventListener("keydown", handleKeyPress);
     return () => window.removeEventListener("keydown", handleKeyPress);
-  }, [currentScreen, showingAnswer, currentChoices]);
+  }, [
+    currentScreen,
+    showingAnswer,
+    currentChoices,
+    sentence,
+    definitionVerification,
+    sentenceVerification,
+  ]);
 
   const playSound = (soundPath: string) => {
     if (!soundEnabled) return;
@@ -112,8 +217,10 @@ export default function QuizPage() {
     // Prevent answering if already showing answer
     if (showingAnswer) return;
 
-    setSelectedAnswer(choice);
     const isCorrect = choice === currentWords[currentQuestionIndex]?.definition;
+    setSelectedAnswer({ text: choice, isCorrect });
+
+    setShowingAnswer(true);
 
     if (isCorrect) {
       // Calculate the new streak first
@@ -134,7 +241,6 @@ export default function QuizPage() {
       // Update the streak state
       setCorrectAnswersInRow(newStreak);
 
-      setShowingAnswer(true);
       // Move to next question after a delay
       setTimeout(() => {
         moveToNextQuestion();
@@ -148,7 +254,6 @@ export default function QuizPage() {
       const currentWord = currentWords[currentQuestionIndex].word;
       await toggleStarredWord(currentWord);
       setStarredWords((prev) => new Set([...prev, currentWord]));
-      setCurrentScreen("sentence");
     }
   };
 
@@ -612,14 +717,22 @@ export default function QuizPage() {
                       ? choice ===
                         currentWords[currentQuestionIndex]?.definition
                         ? "bg-green-100 border-green-500 dark:bg-green-900"
-                        : selectedAnswer === choice
+                        : selectedAnswer?.text === choice
                         ? "bg-red-100 border-red-500 dark:bg-red-900"
                         : ""
+                      : selectedAnswer?.text === choice
+                      ? "bg-accent border-accent"
                       : "hover:bg-muted/50"
                   }`}
-                  onClick={() =>
-                    !showingAnswer && handleAnswer(choice).catch(console.error)
-                  }
+                  onClick={() => {
+                    if (!showingAnswer) {
+                      const isCorrect =
+                        choice ===
+                        currentWords[currentQuestionIndex]?.definition;
+                      setSelectedAnswer({ text: choice, isCorrect });
+                      setSelectedChoiceIndex(index);
+                    }
+                  }}
                 >
                   <CardContent className="p-0">
                     <div className="flex items-start gap-4">
@@ -635,26 +748,77 @@ export default function QuizPage() {
 
             <div className="text-center space-y-4">
               <div className="flex gap-4 justify-center">
-                <Button
-                  onClick={() => handleIDontKnow().catch(console.error)}
-                  variant="outline"
-                  disabled={showingAnswer}
-                >
-                  I Don't Know
-                </Button>
-                <Button
-                  onClick={handleAlreadyKnow}
-                  variant="outline"
-                  disabled={showingAnswer}
-                  className="bg-green-50 text-green-700 border-green-200 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-300 dark:border-green-800 dark:hover:bg-green-900/30"
-                >
-                  <Check className="h-4 w-4 mr-2" />
-                  Already Know
-                </Button>
+                {showingAnswer && !selectedAnswer?.isCorrect ? (
+                  <>
+                    <div className="space-y-4">
+                      <p className="text-lg text-muted-foreground mb-4">
+                        The correct answer was:{" "}
+                        <span className="font-medium text-green-600 dark:text-green-400">
+                          {currentWords[currentQuestionIndex]?.definition}
+                        </span>
+                      </p>
+                      <Button
+                        onClick={() => setCurrentScreen("sentence")}
+                        variant="default"
+                        size="lg"
+                        className="px-8"
+                      >
+                        Continue
+                      </Button>
+                    </div>
+                  </>
+                ) : selectedAnswer && !showingAnswer ? (
+                  <Button
+                    onClick={() =>
+                      handleAnswer(selectedAnswer.text).catch(console.error)
+                    }
+                    variant="default"
+                    size="lg"
+                    className="px-8"
+                  >
+                    Submit Answer
+                  </Button>
+                ) : (
+                  !showingAnswer && (
+                    <>
+                      <Button
+                        onClick={() => handleIDontKnow().catch(console.error)}
+                        variant="outline"
+                        disabled={showingAnswer}
+                      >
+                        I Don't Know
+                      </Button>
+                      <Button
+                        onClick={handleAlreadyKnow}
+                        variant="outline"
+                        disabled={showingAnswer}
+                        className="bg-green-50 text-green-700 border-green-200 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-300 dark:border-green-800 dark:hover:bg-green-900/30"
+                      >
+                        <Check className="h-4 w-4 mr-2" />
+                        Already Know
+                      </Button>
+                    </>
+                  )
+                )}
               </div>
-              <p className="text-sm text-muted-foreground">
-                Press 1-4 to select answers quickly
-              </p>
+              {!showingAnswer && (
+                <p className="text-sm text-muted-foreground">
+                  Press 1-4 to select answers • Press{" "}
+                  <kbd className="px-1 py-0.5 bg-muted rounded text-xs">
+                    Enter
+                  </kbd>{" "}
+                  to submit
+                </p>
+              )}
+              {showingAnswer && !selectedAnswer?.isCorrect && (
+                <p className="text-sm text-muted-foreground">
+                  Press{" "}
+                  <kbd className="px-1 py-0.5 bg-muted rounded text-xs">
+                    Enter
+                  </kbd>{" "}
+                  to continue
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -688,6 +852,18 @@ export default function QuizPage() {
               <Textarea
                 value={sentence}
                 onChange={(e) => setSentence(e.target.value)}
+                onKeyDown={(e) => {
+                  if (
+                    e.key === "Enter" &&
+                    !e.shiftKey &&
+                    sentence.trim() &&
+                    !isVerifying &&
+                    sentenceVerification === null
+                  ) {
+                    e.preventDefault();
+                    verifySentence();
+                  }
+                }}
                 placeholder="Write your sentence here..."
                 className="min-h-[120px] text-lg"
                 disabled={isVerifying || sentenceVerification !== null}
@@ -724,15 +900,20 @@ export default function QuizPage() {
                     Continue to Next Question
                   </Button>
                 ) : (
-                  <Button
-                    onClick={() => {
-                      setSentenceVerification(null);
-                      setSentence("");
-                    }}
-                    className="px-8"
-                  >
-                    Try Again
-                  </Button>
+                  <div className="space-y-4">
+                    <p className="text-sm text-yellow-600 dark:text-yellow-400">
+                      Your sentence needs improvement. Please try again.
+                    </p>
+                    <Button
+                      onClick={() => {
+                        setSentenceVerification(null);
+                        setSentence("");
+                      }}
+                      className="px-8"
+                    >
+                      Try Again
+                    </Button>
+                  </div>
                 )}
               </div>
             </div>
@@ -754,10 +935,20 @@ export default function QuizPage() {
               <Button
                 variant="outline"
                 onClick={() => {
+                  // Start a new quiz with fresh random words
+                  const availableWords = vocab.filter(
+                    (word) => !knownWords.has(word.word)
+                  );
+                  const randomizedVocab = [...availableWords].sort(
+                    () => Math.random() - 0.5
+                  );
+                  setCurrentWords(randomizedVocab);
                   setCurrentScreen("quiz");
                   setCurrentQuestionIndex(0);
                   setShowingAnswer(false);
                   setSelectedAnswer(null);
+                  setSelectedChoiceIndex(null);
+                  setCorrectAnswersInRow(0);
                 }}
               >
                 Take Quiz Again
@@ -765,12 +956,16 @@ export default function QuizPage() {
               <Button
                 variant="secondary"
                 onClick={() => {
+                  // Keep the same words but reset the index and states
                   setCurrentScreen("review");
                   setCurrentQuestionIndex(0);
                   setUserDefinition("");
                   setDefinitionVerification(null);
                   setSentence("");
                   setSentenceVerification(null);
+                  setShowingAnswer(false);
+                  setSelectedAnswer(null);
+                  setSelectedChoiceIndex(null);
                 }}
                 className="w-full"
               >
@@ -830,12 +1025,31 @@ export default function QuizPage() {
                 <Textarea
                   value={userDefinition}
                   onChange={(e) => setUserDefinition(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (
+                      e.key === "Enter" &&
+                      !e.shiftKey &&
+                      userDefinition.trim() &&
+                      !isVerifyingDefinition &&
+                      definitionVerification === null
+                    ) {
+                      e.preventDefault();
+                      verifyDefinition();
+                    }
+                  }}
                   placeholder="Describe what this word means in your own words..."
                   className="min-h-[120px] text-lg"
                   disabled={
                     isVerifyingDefinition || definitionVerification !== null
                   }
                 />
+                <p className="text-xs text-muted-foreground text-center">
+                  💡 Press{" "}
+                  <kbd className="px-1 py-0.5 bg-muted rounded text-xs">
+                    Enter
+                  </kbd>{" "}
+                  to submit
+                </p>
 
                 {definitionVerification && (
                   <div
@@ -918,6 +1132,18 @@ export default function QuizPage() {
               <Textarea
                 value={sentence}
                 onChange={(e) => setSentence(e.target.value)}
+                onKeyDown={(e) => {
+                  if (
+                    e.key === "Enter" &&
+                    !e.shiftKey &&
+                    sentence.trim() &&
+                    !isVerifying &&
+                    sentenceVerification === null
+                  ) {
+                    e.preventDefault();
+                    verifySentence();
+                  }
+                }}
                 placeholder="Write your sentence here..."
                 className="min-h-[120px] text-lg"
                 disabled={isVerifying || sentenceVerification !== null}
@@ -954,15 +1180,20 @@ export default function QuizPage() {
                     Continue to Next Word
                   </Button>
                 ) : (
-                  <Button
-                    onClick={() => {
-                      setSentenceVerification(null);
-                      setSentence("");
-                    }}
-                    className="px-8"
-                  >
-                    Try Again
-                  </Button>
+                  <div className="space-y-4">
+                    <p className="text-sm text-yellow-600 dark:text-yellow-400">
+                      Your sentence needs improvement. Please try again.
+                    </p>
+                    <Button
+                      onClick={() => {
+                        setSentenceVerification(null);
+                        setSentence("");
+                      }}
+                      className="px-8"
+                    >
+                      Try Again
+                    </Button>
+                  </div>
                 )}
               </div>
             </div>
@@ -1007,10 +1238,20 @@ export default function QuizPage() {
               <Button
                 variant="outline"
                 onClick={() => {
+                  // Start a new quiz with fresh random words
+                  const availableWords = vocab.filter(
+                    (word) => !knownWords.has(word.word)
+                  );
+                  const randomizedVocab = [...availableWords].sort(
+                    () => Math.random() - 0.5
+                  );
+                  setCurrentWords(randomizedVocab);
                   setCurrentScreen("quiz");
                   setCurrentQuestionIndex(0);
                   setShowingAnswer(false);
                   setSelectedAnswer(null);
+                  setSelectedChoiceIndex(null);
+                  setCorrectAnswersInRow(0);
                   setUserDefinition("");
                   setDefinitionVerification(null);
                   setSentence("");
